@@ -1,0 +1,289 @@
+#include <Arduino.h>
+
+//define pin #'s to their varables
+//the only times these are really interacted with are at the end of the loop, when we update 
+//the output pins, and during the functions which we can call within the loop, but that are
+//defined outside of the loop. The functions gather all information we need about the system 
+//to operate the lights, for this reason, we never need to use these pins throughout the logic. 
+
+#define PIN_YP 11   //Delivers the variable voltage required for the two proper orange lights.
+#define PIN_R1 10   //Delivers variable voltage to red light one. 
+#define PIN_G1 9    //Delivers variable voltage to green light one. 
+#define PIN_Y1 8   //these are digital pins, used to control the exposure of the variable voltage
+#define PIN_Y2 7   //coming out of YP to the two orange lights in each proper traffic light. 
+#define PIN_R2 6   //delivers variable voltage to red light two.
+#define PIN_G2 5   //Delivers variable voltage to green light two. 
+#define PIN_555 4  //Delivers a constant high voltage to the positive bar of the breadboard. 
+#define PIN_BLINK 3   //Delivers variable voltage required for the orange blinking lights. 
+#define PIN_PS A4     //analog input required for the photoresistor. 
+#define PIN_WT1 A1     //input required for car detection at red light on side one.
+#define PIN_WT2 A2     //input required for car detection at red light on side two. 
+#define PIN_MV1 A0     //Input to detect car entering/exiting the single lane on side one. 
+#define PIN_MV2 A3     //Input to detect car entering/exiting the single lane on side two. 
+
+
+//make sure that the pin values stay constant and are global.
+//this means that we can interact with them anywhere in this program, even in other functions.
+const int pins[] = {PIN_YP, PIN_R1, PIN_G1, PIN_Y1, PIN_Y2, PIN_R2, PIN_G2, PIN_555, PIN_BLINK, PIN_PS, PIN_WT1, PIN_WT2, PIN_MV1, PIN_MV2}; 
+
+int R1State, R2State, G1State, G2State, Y1State, Y2State;
+
+int carMoving1 = 0, carMoving2 = 0;
+
+int previous1 = 0, previous2 = 0;
+//global minimum voltage for photosensitive resistor.
+//this is the minimum voltage that the pin associated with the photoresistor can receive, 
+//and still illuminate the lights to full brightness.
+const int minVoltage = 350;
+
+//This is the number of cars in the single lane of traffic at any given time. unsigned so it is non-negtive
+unsigned int carNumber = 0;
+
+//Is updated to 1 when a car is counted that cycle, returns to zero after a no car counted cycle.
+//The purpose is to prevent double counting: a prerequisite for counting a car, is this being 0.
+int justCounted1 = 0;
+int justCounted2 = 0;
+
+//There are four system states, each of which defines one of the four states in the light cycle.
+int systemState = 1;
+
+//These variables are the values returned by the carDetect function. They are returned as a one
+//if there is a car waiting on the corresponding side, and they are returned as a zero if not. 
+int carStopped1 = 0;
+int carStopped2 = 0;
+
+//The referenceTime variable is used whenever a timer needs to start. Then when comparing 
+//checkTime to the referenceTime, we add the duration of the timer to the referenceTime.   
+unsigned long referenceTime = 0;
+
+//The extenedTime variable is used whenever a extened timer is needed in states 2 and 4
+//This will help with timing the yellow light afterwards
+unsigned long extendedTime = 0;
+int extendedTimeSet = 0;
+
+//extendedState variable will be used to determine if the system is currently in an extended state
+int extendedState = 0;
+
+//set all pins to either input or output and set up debugging serial
+void setup() {
+  Serial.begin(9600);
+  pinMode(PIN_YP, OUTPUT);
+  pinMode(PIN_Y1, OUTPUT);
+  pinMode(PIN_Y2, OUTPUT);
+  pinMode(PIN_R1, OUTPUT);
+  pinMode(PIN_G1, OUTPUT);
+  pinMode(PIN_R2, OUTPUT);
+  pinMode(PIN_G2, OUTPUT);
+  pinMode(PIN_555, OUTPUT);
+  pinMode(PIN_BLINK, OUTPUT);
+  pinMode(PIN_PS, INPUT);
+  pinMode(PIN_WT1, INPUT);
+  pinMode(PIN_WT2, INPUT);
+  pinMode(PIN_MV1, INPUT);
+  pinMode(PIN_MV2, INPUT);
+}
+
+void loop() {
+
+//the addedTime variables will take on the same values as the carWaiting variables,
+//which are returned by the carDetect fucntions as a one if there is a car, and a zero if not.
+  carStopped1 = carDetect1();
+  carStopped2 = carDetect2();
+
+//This sets the power level that will be used to illuminate lamps. 
+//The light levels are calculated by lightDetect, based on the behaviour 
+//of the photosensitive resistor. 
+  int powerLevel = lightDetect();
+
+//Starts by checking the time.
+  unsigned long checkTime = millis();
+   
+//Updates the number of cars accounted for in the lane. 
+//The input which adds, and the input which subtracts are swapped based on 
+//which direction cars are moving.
+  if(systemState == 1||4){
+    carNumber=carNumber+carPassed1()-carPassed2();
+  } else {
+    carNumber=carNumber+carPassed2()-carPassed1();
+  }
+  
+//each of these large if statements determines which state the system is in right now, 
+//and then exceutes any necessary operations based on that, elapsed time, 
+//and the number of carse with it. 
+  if(systemState == 1){     
+    R1State = powerLevel;
+    G1State = 0;
+    R2State = powerLevel;
+    G2State = 0;
+    delay(100);
+    if(carNumber == 0){
+      systemState = 2;
+      referenceTime = millis();
+    }
+  }
+
+  if(systemState == 2){
+    R1State = powerLevel;
+    G1State = 0;
+    R2State = 0;
+    G2State = powerLevel;
+    delay(100);
+    if(checkTime >= referenceTime + 30000){
+      if(carStopped1 == 1 || carStopped2 == 0) { //Check to see if we should switch lights and if not, set to extended time
+        if(extendedState == 0){
+          G2State = 0;
+          Y2State = powerLevel;
+          if(checkTime >= referenceTime + 35000) {
+            systemState = 3;
+            Y2State = 0;
+          }
+        } else {
+          if(extendedTimeSet == 0){
+            extendedTime = millis();
+            extendedTimeSet = 1;
+          } else {
+            if(checkTime >= extendedTime + 10000){
+              G2State = 0;
+              Y2State = powerLevel;
+              if(checkTime >= extendedTime + 15000){
+                systemState = 3;
+                Y2State = 0;
+                extendedTimeSet = 0;
+                extendedTime = 0;
+                extendedState = 0;
+              }
+            }
+          }
+        }
+      } else {
+          extendedState = 1;
+      }
+    }
+  }                    
+
+  if(systemState == 3){ 
+    R1State = powerLevel;
+    G1State = 0;
+    R2State = powerLevel;
+    G2State = 0;   
+    delay(100);
+    if(carNumber == 0){
+      systemState = 4;
+      referenceTime = millis();
+    } 
+  }
+
+  if(systemState == 4){
+    R1State = 0;
+    G1State = powerLevel;
+    R2State = powerLevel;
+    G2State = 0;
+    delay(100);
+    if(checkTime >= referenceTime + 30000){
+      if(carStopped1 == 0 || carStopped2 == 1) { //Check to see if we should switch lights and if not, set to extended time
+        if(extendedState == 0){
+          G1State = 0;
+          Y1State = powerLevel;
+          if(checkTime >= referenceTime + 35000) {
+            systemState = 1;
+            Y1State = 0;
+          }
+        } else {
+          if(extendedTimeSet == 0){
+            extendedTime = millis();
+            extendedTimeSet = 1;
+          } else {
+            if(checkTime >= extendedTime + 10000){
+              G2State = 0;
+              Y2State = powerLevel;
+              if(checkTime >= extendedTime + 15000){
+                systemState = 1;
+                Y2State = 0;
+                extendedTimeSet = 0;
+                extendedTime = 0;
+                extendedState = 0;
+              }
+            }
+          }
+        }
+      } else {
+          extendedState = 1;
+      }
+    }
+  }
+
+//Turn on all the required lights and 555 with their respective power level
+  digitalWrite(PIN_555, HIGH);
+  analogWrite(PIN_BLINK, powerLevel);
+  analogWrite(PIN_YP, powerLevel);
+  analogWrite(PIN_R1, R1State);
+  analogWrite(PIN_G1, G1State);
+  digitalWrite(PIN_Y1, Y1State);
+  analogWrite(PIN_R2, R2State);
+  analogWrite(PIN_G2, G2State);
+  digitalWrite(PIN_Y2, Y2State);
+}
+
+//The car passed functions return a value of one when they just detect a high voltage read 
+//(meaning a car passed by that point) and a value of zero if not.
+int carPassed1(){
+  int carMoving1 = digitalRead(PIN_MV1);
+  int result1 = 0;
+  if ((previous1 - carMoving1) < 0) {
+    result1 = 1;
+  }
+  previous1 = carMoving1;
+  Serial.println(carMoving1);
+  delay(100);
+  return result1;
+}
+
+int carPassed2(){
+  int carMoving2 = digitalRead(PIN_MV2);
+  int result2 = 0;
+  if ((previous2 - carMoving2) < 0) {
+    result2 = 1;
+  }
+  previous2 = carMoving2;
+  Serial.println(carMoving2);
+  delay(100);
+  return result2;
+}
+
+//Car detect functions just determine if a car is waiting at either end of the lane.
+int carDetect1(){
+  int carWaiting1 = 0;
+  int carWait1 = digitalRead(PIN_WT1);
+  Serial.println(carWait1);
+  delay(100);
+  if(carWait1 == 1){
+    carWaiting1 = 1;
+  }
+  return carWaiting1;
+}
+
+int carDetect2(){
+  int carWaiting2 = 0;
+  int carWait2 = digitalRead(PIN_WT2);
+  Serial.println(carWait2);
+  delay(100);
+  if(carWait2 == 1){
+    carWaiting2 = 1;
+  }
+  return carWaiting2; 
+}
+
+//light detect outputs the light level, amounts the desired voltage for the lamps at a 
+//particular time of day. 
+int lightDetect(){
+  int lightLevel = 0;
+  int psVoltage = analogRead(PIN_PS);
+  Serial.println(psVoltage);
+  delay(100);
+  if(psVoltage < minVoltage){
+    lightLevel = 50;
+  } else {
+    lightLevel = 255;
+  }
+  return lightLevel;
+}
