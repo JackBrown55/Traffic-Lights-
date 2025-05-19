@@ -1,3 +1,5 @@
+This code was written for an Arduino nano, and using the standard Arduino IDE.
+
 I will not be providing the exact description of the project that we were assigned, in order to prevent future 
 students from knowing whether or not it works for their specific project. 
 
